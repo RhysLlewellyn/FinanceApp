@@ -1,6 +1,6 @@
 # Personal Finance Manager
 
-## Video Demo: [Your YouTube video URL here]
+## Video Demo: TBC
 
 ## Table of Contents
 
