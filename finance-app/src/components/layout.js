@@ -29,7 +29,7 @@ function Layout({ children }) {
       <AppBar position="static">
         <Toolbar>
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            Finance App
+            Alpha Finance
           </Typography>
           {isAuthenticated && (
             <>
