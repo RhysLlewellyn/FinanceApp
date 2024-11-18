@@ -1,56 +1,65 @@
-import React, { useState } from 'react';
-import { Button, Typography, CircularProgress, Snackbar } from '@mui/material';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Button, CircularProgress, Snackbar, Dialog } from '@mui/material';
+import { usePlaidLink } from 'react-plaid-link';
 import { usePlaidLinkContext } from '../services/PlaidLinkProvider';
 import api from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
-function PlaidLink() {
+function PlaidLink({ onSuccess, onError, onExit }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const { open, ready } = usePlaidLinkContext();
+  const { linkToken } = usePlaidLinkContext();
   const navigate = useNavigate();
 
-  const handleOpen = () => {
+  const handleOnSuccess = async (public_token, metadata) => {
     setLoading(true);
-    open();
-  };
-
-  const onSuccess = async (public_token, metadata) => {
     try {
-      // Exchange public token for access token
-      await api.post('/set_access_token', { public_token });
+      const response = await api.post('/set_access_token', {
+        public_token: public_token,
+      });
 
-      // Fetch account info
-      await api.post('/fetch_account_info');
+      if (response.status === 201) {
+        const accountResponse = await api.post('/fetch_account_info');
 
-      setLoading(false);
-      navigate('/dashboard'); // Redirect to dashboard after successful link
+        if (accountResponse.data.accounts) {
+          onSuccess(accountResponse.data.accounts, metadata);
+        } else {
+          throw new Error('No accounts returned from server');
+        }
+      }
     } catch (error) {
-      console.error('Error linking account:', error);
-      setError('Failed to link account. Please try again.');
+      console.error('Error in handleOnSuccess:', error);
+      const errorMessage =
+        error.response?.data?.error || 'Failed to link account';
+      onError(errorMessage);
+    } finally {
       setLoading(false);
     }
   };
 
+  const config = {
+    token: linkToken,
+    onSuccess: handleOnSuccess,
+    onExit: onExit,
+  };
+
+  const { open, ready } = usePlaidLink(config);
+
+  useEffect(() => {
+    if (ready) {
+      open();
+    }
+  }, [ready, open]);
+
   return (
-    <div>
-      <Typography variant="h4" gutterBottom>
-        Link Your Bank Account
-      </Typography>
-      <Button
-        variant="contained"
-        onClick={handleOpen}
-        disabled={!ready || loading}
-      >
-        {loading ? <CircularProgress size={24} /> : 'Link Account'}
-      </Button>
+    <Dialog open={ready} onClose={onExit}>
       <Snackbar
         open={!!error}
         autoHideDuration={6000}
         onClose={() => setError(null)}
         message={error}
       />
-    </div>
+    </Dialog>
   );
 }
 

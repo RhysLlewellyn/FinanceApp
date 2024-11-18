@@ -1,6 +1,13 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from 'react';
 import { usePlaidLink } from 'react-plaid-link';
 import api from './api';
+import { useAuth } from './authContext';
 
 const PlaidLinkContext = createContext();
 
@@ -10,43 +17,65 @@ export function usePlaidLinkContext() {
 
 export function PlaidLinkProvider({ children }) {
   const [linkToken, setLinkToken] = useState(null);
-  const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const { user } = useAuth();
 
-  useEffect(() => {
-    const createLinkToken = async () => {
-      try {
-        const response = await api.post('/create_link_token');
-        setLinkToken(response.data.link_token);
-      } catch (error) {
-        console.error('Error creating link token:', error);
-        // You might want to set an error state here and handle it in your UI
-      }
-    };
-    createLinkToken();
+  const onSuccess = useCallback((public_token, metadata) => {
+    console.log('Plaid Link success:', metadata);
+  }, []);
+
+  const onExit = useCallback((err, metadata) => {
+    console.log('Plaid Link exit:', err, metadata);
   }, []);
 
   const config = {
     token: linkToken,
-    onSuccess: async (public_token, metadata) => {
-      try {
-        await api.post('/set_access_token', { public_token });
-        // Handle successful link
-      } catch (error) {
-        console.error('Error setting access token:', error);
-      }
-    },
+    onSuccess,
+    onExit,
   };
 
-  const { open, ready: plaidReady } = usePlaidLink(config);
+  const { open, ready, error: plaidError } = usePlaidLink(config);
 
   useEffect(() => {
-    if (plaidReady) {
-      setReady(true);
-    }
-  }, [plaidReady]);
+    const createToken = async () => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+        console.log('Attempting to create link token...');
+        const response = await api.post('/create_link_token');
+        console.log('Link token response:', response);
+        setLinkToken(response.data.link_token);
+      } catch (err) {
+        console.error('Error creating link token:', err);
+        setError('Failed to initialize Plaid. Please try again later.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    createToken();
+  }, [user]);
+
+  console.log('PlaidLinkProvider state:', { linkToken, loading, error, ready });
+
+  if (loading) {
+    return <div>Loading Plaid integration...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
 
   return (
-    <PlaidLinkContext.Provider value={{ open, ready }}>
+    <PlaidLinkContext.Provider
+      value={{ linkToken, open, ready, error: plaidError }}
+    >
       {children}
     </PlaidLinkContext.Provider>
   );

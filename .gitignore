@@ -108,3 +108,5 @@ logs/
 *$py.class
 .webassets-cache
 .pnp.*
+
+encrypt_create.py

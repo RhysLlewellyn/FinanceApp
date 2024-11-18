@@ -185,3 +185,30 @@ During development, handling real-time updates of financial data and ensuring da
 3. Integrating with additional financial services beyond banking (e.g., investments, cryptocurrencies)
 4. Enhancing data visualization with more interactive and customizable charts
 5. Implementing machine learning for transaction categorization and spending predictions
+
+### File Structure:
+
+```
+finance-backend/
+├── app/
+│   ├── routes/
+│   │   ├── accounts.py      # Account management endpoints
+│   │   ├── auth.py         # Authentication endpoints
+│   │   ├── budgets.py      # Budget management endpoints
+│   │   ├── categories.py   # Category management endpoints
+│   │   ├── financial.py    # Financial analysis endpoints
+│   │   ├── notifications.py # Notification endpoints
+│   │   ├── plaid.py        # Plaid integration endpoints
+│   │   ├── transactions.py # Transaction management endpoints
+│   │   └── webhooks.py     # Webhook handling endpoints
+│   ├── models/
+│   └── services/
+├── tests/
+│   ├── auth/              # Authentication tests
+│   ├── financial/         # Financial feature tests
+│   ├── integration/       # Integration tests
+│   ├── performance/       # Performance tests
+│   └── services/          # Service tests
+├── scripts/              # Utility scripts
+└── requirements.txt
+```

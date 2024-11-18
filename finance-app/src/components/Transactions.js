@@ -1,79 +1,91 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../services/authContext';
 import api from '../services/api';
-import { formatCurrency } from '../utils/currencyFormatter';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Paper,
-  TextField,
-  CircularProgress,
+  Box,
   Button,
-  Snackbar,
-  Alert,
-  TablePagination,
-  TableSortLabel,
+  TextField,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  IconButton,
-  Checkbox,
-  Select,
-  MenuItem,
   FormControl,
   InputLabel,
-  Box,
-  Collapse,
-  Typography,
+  Select,
+  MenuItem,
+  Snackbar,
+  Alert,
   InputAdornment,
+  Card,
+  CardContent,
+  Typography,
+  Tabs,
+  Tab,
+  Chip,
+  LinearProgress,
+  CircularProgress,
 } from '@mui/material';
+import { DataGrid, GridToolbar } from '@mui/x-data-grid';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
-import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
-import dayjs from 'dayjs';
-import EditIcon from '@mui/icons-material/Edit';
-import CheckIcon from '@mui/icons-material/Check';
-import CloseIcon from '@mui/icons-material/Close';
-import FilterListIcon from '@mui/icons-material/FilterList';
-import AddIcon from '@mui/icons-material/Add';
+import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
+import ArrowCircleDown from '@mui/icons-material/ArrowCircleDown';
+import ArrowCircleUpIcon from '@mui/icons-material/ArrowCircleUp';
+import {
+  ResponsiveContainer,
+  BarChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Bar,
+} from 'recharts';
+import { formatCurrency } from '../utils/currencyFormatter';
+import useNotification from '../hooks/useNotification';
+import AddCardIcon from '@mui/icons-material/AddCard';
+import { alpha } from '@mui/material/styles';
+import { TabContext, TabList, TabPanel } from '@mui/lab';
 
 function Transactions() {
   const { isAuthenticated } = useAuth();
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState(null);
-  const [editingCategory, setEditingCategory] = useState('');
   const [error, setError] = useState(null);
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
-  const [orderBy, setOrderBy] = useState('date');
-  const [order, setOrder] = useState('desc');
-  const [startDate, setStartDate] = useState(null);
-  const [endDate, setEndDate] = useState(null);
-  const [categoryFilter, setCategoryFilter] = useState('');
-  const [totalTransactions, setTotalTransactions] = useState(0);
-  const [selectedTransactions, setSelectedTransactions] = useState([]);
-  const [bulkEditCategory, setBulkEditCategory] = useState('');
-  const [openBulkEditDialog, setOpenBulkEditDialog] = useState(false);
   const [categories, setCategories] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [openAddDialog, setOpenAddDialog] = useState(false);
+  const [openAddCategoryDialog, setOpenAddCategoryDialog] = useState(false);
   const [newTransaction, setNewTransaction] = useState({
-    date: '',
+    date: null,
     name: '',
     amount: '',
     category: '',
     account_id: '',
   });
-  const [openAddDialog, setOpenAddDialog] = useState(false);
-  const [accounts, setAccounts] = useState([]);
-  const [accountFilter, setAccountFilter] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
-  const [openAddCategoryDialog, setOpenAddCategoryDialog] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
+  const [selectedTab, setSelectedTab] = useState(0);
+  const [chartData, setChartData] = useState([]);
+  const [transactionFilter, setTransactionFilter] = useState('all');
+  const [openUpdateCategoryDialog, setOpenUpdateCategoryDialog] =
+    useState(false);
+  const [selectedTransactionId, setSelectedTransactionId] = useState(null);
+  const [newCategory, setNewCategory] = useState('');
+  const [cardBalance, setCardBalance] = useState(0);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessages, setErrorMessages] = useState({
+    fetch: null,
+    balance: null,
+    transaction: null,
+  });
+  const { showNotification } = useNotification();
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [isChartLoading, setIsChartLoading] = useState(false);
+  const [isAccountLoading, setIsAccountLoading] = useState(false);
+  const [dateRange, setDateRange] = useState(null);
+
+  const clearError = (errorType) => {
+    setErrorMessages((prev) => ({ ...prev, [errorType]: null }));
+  };
 
   const fetchTransactions = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -81,573 +93,1150 @@ function Transactions() {
     try {
       const response = await api.get('/stored_transactions', {
         params: {
-          page: page + 1,
-          per_page: rowsPerPage,
-          order_by: orderBy,
-          order: order,
-          start_date: startDate ? startDate.format('YYYY-MM-DD') : undefined,
-          end_date: endDate ? endDate.format('YYYY-MM-DD') : undefined,
-          category: categoryFilter,
-          account_id: accountFilter,
+          days_requested: 730,
+          account_id: selectedAccount?.id,
         },
       });
-      setTransactions(response.data.transactions);
-      setTotalTransactions(response.data.total);
-      setLoading(false);
+
+      let filteredTransactions = [...response.data.transactions];
+
+      // Apply account filter if selected
+      if (selectedAccount) {
+        filteredTransactions = filteredTransactions.filter(
+          (transaction) => transaction.account_id === selectedAccount.id
+        );
+      }
+
+      // Apply transaction type filter
+      if (transactionFilter === 'income') {
+        filteredTransactions = filteredTransactions.filter(
+          (transaction) => transaction.amount > 0
+        );
+      } else if (transactionFilter === 'expenses') {
+        filteredTransactions = filteredTransactions.filter(
+          (transaction) => transaction.amount < 0
+        );
+      }
+
+      // Apply date filter if selected
+      if (dateRange) {
+        const selectedDate = new Date(dateRange);
+        filteredTransactions = filteredTransactions.filter((transaction) => {
+          const transactionDate = new Date(transaction.date);
+          return (
+            transactionDate.getFullYear() === selectedDate.getFullYear() &&
+            transactionDate.getMonth() === selectedDate.getMonth()
+          );
+        });
+      }
+
+      // Sort transactions by date (most recent first)
+      filteredTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      setTransactions(filteredTransactions);
     } catch (error) {
       console.error('Error fetching transactions:', error);
       setError('Failed to fetch transactions');
+    } finally {
       setLoading(false);
     }
+  }, [isAuthenticated, selectedAccount, transactionFilter, dateRange]);
+
+  const fetchCategories = useCallback(async () => {
+    try {
+      const response = await api.get('/get_categories');
+      console.log('Categories response:', response);
+      setCategories(response.data);
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+      setError('Failed to fetch categories');
+    }
+  }, []);
+
+  const fetchAccounts = useCallback(async () => {
+    try {
+      const response = await api.get('/accounts');
+      setAccounts(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Error fetching accounts:', error);
+      setError('Failed to fetch accounts');
+    }
+  }, []);
+
+  const getFilteredTransactions = useCallback(() => {
+    switch (transactionFilter) {
+      case 'income':
+        return transactions.filter((transaction) => transaction.amount >= 0);
+      case 'expense':
+        return transactions.filter((transaction) => transaction.amount < 0);
+      default:
+        return transactions;
+    }
+  }, [transactions, transactionFilter]);
+
+  const fetchExpenseChartData = useCallback(async () => {
+    setIsChartLoading(true);
+    try {
+      const response = await api.get('/stored_transactions', {
+        params: {
+          account_id: selectedAccount?.id,
+          days_requested: 730,
+        },
+      });
+
+      const accountTransactions = selectedAccount
+        ? response.data.transactions.filter(
+            (t) => t.account_id === selectedAccount.id
+          )
+        : response.data.transactions;
+
+      // Group transactions by month and calculate total expenses
+      const expensesByMonth = accountTransactions.reduce((acc, transaction) => {
+        // Only include negative amounts (expenses)
+        if (transaction.amount < 0) {
+          const date = new Date(transaction.date);
+          const monthYear = `${date.getFullYear()}-${String(
+            date.getMonth() + 1
+          ).padStart(2, '0')}`;
+          acc[monthYear] = (acc[monthYear] || 0) + Math.abs(transaction.amount);
+        }
+        return acc;
+      }, {});
+
+      // Convert to array and sort by date
+      const chartData = Object.entries(expensesByMonth)
+        .map(([monthYear, amount]) => ({
+          month: new Date(monthYear + '-01').toLocaleString('default', {
+            month: 'short',
+          }),
+          amount: Number(amount.toFixed(2)),
+          year: new Date(monthYear + '-01').getFullYear(), // Add year for better sorting
+        }))
+        .sort((a, b) => {
+          // Sort by date properly
+          const dateA = new Date(`${a.month} ${a.year}`);
+          const dateB = new Date(`${b.month} ${b.year}`);
+          return dateA - dateB;
+        });
+
+      // Take the last 6 months
+      const last6Months = chartData.slice(-6);
+      setChartData(last6Months);
+    } catch (error) {
+      console.error('Error fetching expense chart data:', error);
+      setError('Failed to fetch expense chart data');
+    } finally {
+      setIsChartLoading(false);
+    }
+  }, [selectedAccount]);
+
+  const fetchCardBalance = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      clearError('balance');
+      const response = await api.get('/accounts');
+      const accounts = response.data;
+
+      if (!accounts || accounts.length === 0) {
+        setErrorMessages((prev) => ({
+          ...prev,
+          balance: 'No accounts found. Please link an account to view balance.',
+        }));
+        return;
+      }
+
+      setCardBalance(accounts[0].balance);
+    } catch (error) {
+      const errorMessage =
+        error.response?.data?.error ||
+        'Failed to fetch card balance. Please try again later.';
+      setErrorMessages((prev) => ({ ...prev, balance: errorMessage }));
+      console.error('Error fetching card balance:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTransactions();
+    fetchAccounts();
+    fetchCategories();
+    fetchExpenseChartData();
+    fetchCardBalance();
   }, [
-    isAuthenticated,
-    page,
-    rowsPerPage,
-    orderBy,
-    order,
-    startDate,
-    endDate,
-    categoryFilter,
-    accountFilter,
+    fetchTransactions,
+    fetchAccounts,
+    fetchCategories,
+    fetchExpenseChartData,
+    fetchCardBalance,
   ]);
 
   useEffect(() => {
-    fetchTransactions();
-  }, [fetchTransactions]);
+    console.log('Categories:', categories);
+  }, [categories]);
 
-  useEffect(() => {
-    const fetchAccounts = async () => {
-      try {
-        setLoading(true);
-        const response = await api.get('/accounts');
-        setAccounts(Array.isArray(response.data) ? response.data : []);
-      } catch (error) {
-        console.error('Error fetching accounts:', error);
-        setError('Failed to fetch accounts');
-        setAccounts([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchAccounts();
-  }, []);
-
-  const handleBulkCategoryChange = async () => {
+  const handleAddTransaction = async () => {
     try {
-      await api.put('/stored_transactions/bulk_update', {
-        transaction_ids: selectedTransactions,
-        category: bulkEditCategory,
-      });
-      setTransactions(
-        transactions.map((t) =>
-          selectedTransactions.includes(t.id)
-            ? { ...t, category: bulkEditCategory }
-            : t
-        )
-      );
-      setSelectedTransactions([]);
-      setBulkEditCategory('');
-      setOpenBulkEditDialog(false);
-      fetchTransactions();
+      setIsLoading(true);
+      clearError('transaction');
+
+      // Validation
+      const validationErrors = validateTransaction(newTransaction);
+      if (validationErrors) {
+        setErrorMessages((prev) => ({
+          ...prev,
+          transaction: validationErrors,
+        }));
+        return;
+      }
+
+      const transactionToAdd = {
+        ...newTransaction,
+        amount: parseFloat(newTransaction.amount) || 0,
+      };
+
+      const response = await api.post('/stored_transactions', transactionToAdd);
+      setTransactions([response.data, ...transactions]);
+      setOpenAddDialog(false);
+      resetTransactionForm();
+
+      // Show success message using the notification context
+      showNotification('Transaction added successfully');
     } catch (error) {
-      console.error('Error updating transaction categories in bulk:', error);
-      setError('Failed to update transaction categories. Please try again.');
+      const errorMessage =
+        error.response?.data?.error ||
+        'Failed to add transaction. Please try again.';
+      setErrorMessages((prev) => ({ ...prev, transaction: errorMessage }));
+      console.error('Error adding transaction:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleAddCategory = async () => {
-    if (newCategoryName.trim() === '') return;
+  const handleAddCategory = async (categoryName) => {
+    const trimmedCategoryName = categoryName.trim();
+    if (trimmedCategoryName === '') return;
+
     try {
       const response = await api.post('/add_custom_category', {
-        name: newCategoryName,
+        name: trimmedCategoryName,
       });
-      setCategories((prevCategories) => [
-        ...prevCategories,
-        response.data.name,
-      ]);
-      setNewCategoryName('');
-      setOpenAddCategoryDialog(false);
+      setCategories([...categories, response.data.name]);
+      return response.data.name; // Return the new category name
     } catch (error) {
       console.error('Error adding category:', error);
       setError('Failed to add category. Please try again.');
+      throw error; // Rethrow the error to be caught in handleCategoryUpdate
     }
   };
 
-  const handleRequestSort = (property) => {
-    const isAsc = orderBy === property && order === 'asc';
-    setOrder(isAsc ? 'desc' : 'asc');
-    setOrderBy(property);
+  const handleUpdateCategory = (transactionId) => {
+    setSelectedTransactionId(transactionId);
+    setOpenUpdateCategoryDialog(true);
   };
 
-  const handleChangePage = (event, newPage) => {
-    setPage(newPage);
-  };
-
-  const handleChangeRowsPerPage = (event) => {
-    setRowsPerPage(parseInt(event.target.value, 10));
-    setPage(0);
-  };
-
-  const handleCloseError = () => {
-    setError(null);
-  };
-
-  const handleAddTransaction = async () => {
-    if (
-      !newTransaction.date ||
-      !newTransaction.name ||
-      !newTransaction.amount ||
-      !newTransaction.account_id
-    ) {
-      setError('Please fill in all required fields');
-      return;
-    }
+  const handleCategoryUpdate = async () => {
+    if (!selectedTransactionId || !newCategory.trim()) return;
 
     try {
-      const response = await api.post('/stored_transactions', newTransaction);
-      setTransactions([response.data, ...transactions]);
-      setNewTransaction({
-        date: '',
-        name: '',
-        amount: '',
-        category: '',
-        account_id: '',
-      });
-      setOpenAddDialog(false);
-
-      // Refresh account information
-      fetchAccountInfo(newTransaction.account_id);
-
-      // Refresh transactions list
-      fetchTransactions();
-    } catch (error) {
-      console.error(
-        'Error adding transaction:',
-        error.response?.data || error.message
-      );
-      setError('Failed to add transaction');
-    }
-  };
-
-  const fetchAccountInfo = async (accountId) => {
-    try {
-      const response = await api.get(`/accounts/${accountId}`);
-      // Update account information in your state or context
-      updateAccountInfo(response.data);
-    } catch (error) {
-      console.error('Error fetching account info:', error);
-    }
-  };
-
-  const handleApplyFilters = () => {
-    // Reset the page to 1 when applying new filters
-    setPage(0);
-    fetchTransactions();
-  };
-
-  const handleResetFilters = () => {
-    // Reset all filter states to their initial values
-    setStartDate(null);
-    setEndDate(null);
-    setCategoryFilter('');
-    // Reset the page to 1
-    setPage(0);
-    // Fetch transactions with reset filters
-    fetchTransactions();
-  };
-
-  const updateAccountInfo = (accountData) => {
-    setAccounts((prevAccounts) => ({
-      ...prevAccounts,
-      [accountData.id]: accountData,
-    }));
-  };
-
-  const handleCategoryChange = async (transactionId, newCategory) => {
-    try {
-      await api.put(`/stored_transactions/${transactionId}`, {
-        category: newCategory,
-      });
-      setTransactions(
-        transactions.map((t) =>
-          t.id === transactionId ? { ...t, category: newCategory } : t
-        )
-      );
-      setEditingId(null);
-    } catch (error) {
-      console.error('Error updating transaction category:', error);
-      setError('Failed to update transaction category');
-    }
-  };
-
-  useEffect(() => {
-    const fetchCategories = async () => {
-      try {
-        const response = await api.get('/get_categories');
-        setCategories(response.data);
-      } catch (error) {
-        console.error('Error fetching categories:', error);
-        setError('Failed to fetch categories');
+      // Check if the category already exists
+      if (!categories.includes(newCategory)) {
+        // If it doesn't exist, add it
+        await handleAddCategory(newCategory);
       }
-    };
 
-    fetchCategories();
-  }, []);
+      // Update the transaction with the new category
+      const response = await api.put(
+        `/stored_transactions/${selectedTransactionId}`,
+        {
+          category: newCategory,
+        }
+      );
 
-  if (loading) {
-    return <CircularProgress />;
-  }
+      if (response.status === 200) {
+        setTransactions(
+          transactions.map((transaction) =>
+            transaction.id === selectedTransactionId
+              ? { ...transaction, category: newCategory }
+              : transaction
+          )
+        );
+        setOpenUpdateCategoryDialog(false);
+        setNewCategory('');
+        setSelectedTransactionId(null);
+      }
+    } catch (error) {
+      console.error('Error updating category:', error);
+      setError('Failed to update category. Please try again.');
+    }
+  };
 
-  if (error) {
-    return <Typography color="error">{error}</Typography>;
-  }
+  const handleDownloadReceipt = async (transactionId) => {
+    try {
+      const response = await api.get(`/download_receipt/${transactionId}`, {
+        responseType: 'blob',
+      });
 
-  return (
-    <LocalizationProvider dateAdapter={AdapterDayjs}>
-      <>
-        <Box>
-          <Button
-            startIcon={<FilterListIcon />}
-            onClick={() => setShowFilters(!showFilters)}
+      const blob = new Blob([response.data], {
+        type: response.headers['content-type'],
+      });
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      link.download = `receipt-${transactionId}.pdf`;
+      link.click();
+      window.URL.revokeObjectURL(link.href);
+    } catch (error) {
+      console.error('Error downloading receipt:', error);
+      setError('Failed to download receipt. Please try again.');
+    }
+  };
+
+  const columns = [
+    {
+      field: 'icon',
+      headerName: '',
+      width: 60,
+      renderCell: (params) => {
+        const amount = params.row.amount || 0;
+        return amount >= 0 ? (
+          <ArrowCircleUpIcon color="Income" />
+        ) : (
+          <ArrowCircleDown color="Expense" />
+        );
+      },
+    },
+    {
+      field: 'name',
+      headerName: 'Description',
+      width: 200,
+      renderCell: (params) => {
+        const name = params.value || 'Unknown';
+        return (
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            {params.row.logo_url && (
+              <img
+                src={params.row.logo_url}
+                alt=""
+                style={{
+                  width: 20,
+                  height: 20,
+                  marginRight: 8,
+                  borderRadius: '50%',
+                }}
+              />
+            )}
+            <Typography variant="body2">
+              {params.row.website ? (
+                <a
+                  href={params.row.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: 'inherit', textDecoration: 'none' }}
+                >
+                  {name}
+                </a>
+              ) : (
+                name
+              )}
+            </Typography>
+          </Box>
+        );
+      },
+    },
+    {
+      field: 'category',
+      headerName: 'Category',
+      width: 150,
+      renderCell: (params) => {
+        const category = params.value || 'Uncategorized';
+        return (
+          <Chip
+            label={category}
+            size="small"
+            color={category === 'Uncategorized' ? 'default' : 'primary'}
+            onClick={() => handleUpdateCategory(params.row.id)}
+          />
+        );
+      },
+    },
+    {
+      field: 'subcategory',
+      headerName: 'Subcategory',
+      width: 150,
+      renderCell: (params) => {
+        const subcategory = params.value || 'N/A';
+        return <Typography variant="body2">{subcategory}</Typography>;
+      },
+    },
+    {
+      field: 'date',
+      headerName: 'Date',
+      width: 120,
+      renderCell: (params) => {
+        const date = params.value
+          ? new Date(params.value).toLocaleDateString()
+          : 'N/A';
+        return <Typography variant="body2">{date}</Typography>;
+      },
+    },
+    {
+      field: 'amount',
+      headerName: 'Amount',
+      width: 130,
+      renderCell: (params) => (
+        <Typography
+          sx={{
+            color: params.value >= 0 ? 'success.main' : 'error.main',
+          }}
+        >
+          {formatCurrency(params.value, params.row.iso_currency_code)}
+        </Typography>
+      ),
+    },
+    {
+      field: 'merchant_name',
+      headerName: 'Merchant',
+      width: 150,
+      renderCell: (params) => {
+        const merchantName = params.value || 'N/A';
+        return <Typography variant="body2">{merchantName}</Typography>;
+      },
+    },
+    {
+      field: 'location',
+      headerName: 'Location',
+      width: 150,
+      renderCell: (params) => {
+        const location = params.row.location
+          ? `${params.row.location.city || ''} ${
+              params.row.location.region || ''
+            } ${params.row.location.country || ''}`.trim()
+          : 'N/A';
+        return <Typography variant="body2">{location}</Typography>;
+      },
+    },
+    {
+      field: 'payment_channel',
+      headerName: 'Payment Channel',
+      width: 150,
+      renderCell: (params) => {
+        const paymentChannel = params.value
+          ? params.value.charAt(0).toUpperCase() + params.value.slice(1)
+          : 'N/A';
+        return <Typography variant="body2">{paymentChannel}</Typography>;
+      },
+    },
+    {
+      field: 'pending',
+      headerName: 'Status',
+      width: 120,
+      renderCell: (params) => {
+        const status = params.value ? 'Pending' : 'Completed';
+        return (
+          <Chip
+            label={status}
+            size="small"
+            color={params.value ? 'warning' : 'success'}
+          />
+        );
+      },
+    },
+    {
+      field: 'receipt',
+      headerName: 'Receipt',
+      width: 120,
+      renderCell: (params) => (
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => handleDownloadReceipt(params.row.id)}
+        >
+          Download
+        </Button>
+      ),
+    },
+  ];
+
+  // Add validation function
+  const validateTransaction = (transaction) => {
+    if (!transaction.date) return 'Date is required';
+    if (!transaction.name?.trim()) return 'Name is required';
+    if (!transaction.amount) return 'Amount is required';
+    if (!transaction.account_id) return 'Account is required';
+
+    const amount = parseFloat(transaction.amount);
+    if (isNaN(amount) || amount === 0) return 'Please enter a valid amount';
+
+    return null;
+  };
+
+  // Add reset form function
+  const resetTransactionForm = () => {
+    setNewTransaction({
+      date: null,
+      name: '',
+      amount: '',
+      category: '',
+      account_id: '',
+    });
+  };
+
+  // Add error display component
+  const ErrorMessage = ({ error, onClose }) => {
+    if (!error) return null;
+
+    return (
+      <Alert severity="error" onClose={onClose} sx={{ mb: 2 }}>
+        {error}
+      </Alert>
+    );
+  };
+
+  const handleAccountSelect = async (account) => {
+    setIsAccountLoading(true);
+    setSelectedAccount(account);
+    setTransactionFilter('all');
+
+    try {
+      await Promise.all([fetchTransactions(), fetchExpenseChartData()]);
+    } finally {
+      setIsAccountLoading(false);
+    }
+  };
+
+  // Add this new section to show when no specific account is selected
+  const renderAccountSummary = () => (
+    <Box
+      sx={{
+        mt: 3,
+        p: 3,
+        background: 'linear-gradient(135deg, #f8f9fe 0%, #f5f5f5 100%)',
+        borderRadius: 3,
+        border: '1px solid',
+        borderColor: 'divider',
+      }}
+    >
+      <Typography
+        variant="subtitle2"
+        sx={{ color: 'text.secondary', mb: 2, letterSpacing: '0.5px' }}
+      >
+        ACCOUNTS SUMMARY
+      </Typography>
+
+      {/* Stats Section */}
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mb: 3 }}>
+        <Box sx={{ flex: '1 1 calc(50% - 8px)' }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary', mb: 0.5 }}>
+            Total Accounts
+          </Typography>
+          <Typography
+            variant="h5"
+            sx={{ color: 'primary.main', fontWeight: 'bold' }}
           >
-            {showFilters ? 'Hide Filters' : 'Show Filters'}
-          </Button>
-          <Button
-            startIcon={<AddIcon />}
-            onClick={() => setOpenAddDialog(true)}
+            {accounts.length}
+          </Typography>
+        </Box>
+
+        <Box sx={{ flex: '1 1 calc(50% - 8px)' }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary', mb: 0.5 }}>
+            Total Balance
+          </Typography>
+          <Typography
+            variant="h5"
+            sx={{ color: 'primary.main', fontWeight: 'bold' }}
           >
-            Add Transaction
-          </Button>
-          {selectedTransactions.length > 0 && (
-            <Button onClick={() => setOpenBulkEditDialog(true)}>
-              Bulk Edit ({selectedTransactions.length})
+            {formatCurrency(
+              accounts.reduce((total, account) => total + account.balance, 0),
+              'GBP'
+            )}
+          </Typography>
+        </Box>
+
+        <Box sx={{ flex: '1 1 calc(50% - 8px)' }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary', mb: 0.5 }}>
+            Highest Balance
+          </Typography>
+          <Typography
+            variant="h6"
+            sx={{ color: 'success.main', fontWeight: 'medium' }}
+          >
+            {formatCurrency(
+              Math.max(...accounts.map((acc) => acc.balance)),
+              'GBP'
+            )}
+          </Typography>
+        </Box>
+
+        <Box sx={{ flex: '1 1 calc(50% - 8px)' }}>
+          <Typography variant="body2" sx={{ color: 'text.secondary', mb: 0.5 }}>
+            Monthly Expenses
+          </Typography>
+          <Typography
+            variant="h6"
+            sx={{ color: '#FF69B4', fontWeight: 'medium' }}
+          >
+            {formatCurrency(
+              chartData.length > 0 ? chartData[chartData.length - 1].amount : 0,
+              'GBP'
+            )}
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Account List Preview */}
+      <Box sx={{ mt: 3 }}>
+        <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1.5 }}>
+          LINKED ACCOUNTS
+        </Typography>
+        {accounts.map((account, index) => (
+          <Box
+            key={account.id}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              py: 1,
+              borderBottom: index < accounts.length - 1 ? '1px solid' : 'none',
+              borderColor: 'divider',
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              <Box
+                sx={{
+                  width: 24,
+                  height: 24,
+                  borderRadius: '50%',
+                  backgroundColor: (theme) =>
+                    alpha(theme.palette.primary.main, 0.1),
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mr: 1.5,
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  sx={{ color: 'primary.main', fontWeight: 'bold' }}
+                >
+                  {account.name.charAt(0)}
+                </Typography>
+              </Box>
+              <Typography variant="body2">{account.name}</Typography>
+            </Box>
+            <Typography variant="body2" sx={{ fontWeight: 'medium' }}>
+              {formatCurrency(account.balance, account.iso_currency_code)}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+
+  // Update the renderAccountsSection to include the summary
+  const renderAccountsSection = () => (
+    <Card
+      sx={{
+        flexGrow: 1,
+        maxWidth: 400,
+        background: 'linear-gradient(135deg, #fff 0%, #f5f5f5 100%)',
+        borderRadius: 4,
+        boxShadow: (theme) =>
+          `0 2px 16px ${alpha(theme.palette.primary.main, 0.1)}`,
+      }}
+    >
+      <CardContent sx={{ p: 3 }}>
+        <FormControl
+          fullWidth
+          variant="outlined"
+          sx={{
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 2,
+              backgroundColor: 'white',
+              '&:hover': {
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'primary.main',
+                },
+              },
+            },
+          }}
+        >
+          <Select
+            value={selectedAccount?.id || ''}
+            onChange={(e) => {
+              const account = accounts.find((acc) => acc.id === e.target.value);
+              handleAccountSelect(account);
+            }}
+            displayEmpty
+            renderValue={(selected) => {
+              if (!selected) {
+                return (
+                  <Typography sx={{ color: 'text.secondary' }}>
+                    All Accounts
+                  </Typography>
+                );
+              }
+              const account = accounts.find((acc) => acc.id === selected);
+              return account?.name;
+            }}
+            disabled={isAccountLoading}
+          >
+            <MenuItem value="">All Accounts</MenuItem>
+            {accounts.map((account) => (
+              <MenuItem
+                key={account.id}
+                value={account.id}
+                sx={{
+                  py: 1.5,
+                  '&:hover': {
+                    backgroundColor: alpha('#000', 0.02),
+                  },
+                }}
+              >
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    width: '100%',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <Box
+                      sx={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: '50%',
+                        backgroundColor: (theme) =>
+                          alpha(theme.palette.primary.main, 0.1),
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        mr: 2,
+                      }}
+                    >
+                      <Typography
+                        sx={{ color: 'primary.main', fontWeight: 'bold' }}
+                      >
+                        {account.name.charAt(0)}
+                      </Typography>
+                    </Box>
+                    <Typography>{account.name}</Typography>
+                  </Box>
+                  <Typography
+                    sx={{
+                      ml: 2,
+                      color: 'text.primary',
+                      fontWeight: 'medium',
+                    }}
+                  >
+                    {formatCurrency(account.balance, account.iso_currency_code)}
+                  </Typography>
+                </Box>
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        {/* Account Details Card - Works for both All Accounts and individual accounts */}
+        <Box
+          sx={{
+            mt: 3,
+            p: 3,
+            background: 'linear-gradient(135deg, #4318FF 0%, #6B73FF 100%)',
+            color: 'white',
+            borderRadius: 3,
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
+          {isAccountLoading && (
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 2,
+              }}
+            >
+              <LinearProgress
+                sx={{
+                  bgcolor: 'transparent',
+                  '& .MuiLinearProgress-bar': {
+                    bgcolor: 'white',
+                  },
+                }}
+              />
+            </Box>
+          )}
+
+          <Typography
+            variant="subtitle2"
+            sx={{ opacity: 0.8, letterSpacing: '0.5px' }}
+          >
+            {selectedAccount ? 'SELECTED ACCOUNT' : 'ALL ACCOUNTS'}
+          </Typography>
+          <Typography
+            variant="h5"
+            sx={{
+              my: 1,
+              fontWeight: 'bold',
+              opacity: isAccountLoading ? 0.7 : 1,
+              transition: 'opacity 0.2s',
+            }}
+          >
+            {selectedAccount ? selectedAccount.name : 'Total Balance'}
+          </Typography>
+          <Typography
+            variant="h4"
+            sx={{
+              mb: 2,
+              fontWeight: 'bold',
+              opacity: isAccountLoading ? 0.7 : 1,
+              transition: 'opacity 0.2s',
+            }}
+          >
+            {formatCurrency(
+              selectedAccount
+                ? selectedAccount.balance
+                : accounts.reduce(
+                    (total, account) => total + account.balance,
+                    0
+                  ),
+              selectedAccount?.iso_currency_code || 'GBP'
+            )}
+          </Typography>
+          {selectedAccount && (
+            <Typography variant="body2" sx={{ opacity: 0.8 }}>
+              **** **** **** {selectedAccount.mask || '1234'}
+            </Typography>
+          )}
+        </Box>
+      </CardContent>
+    </Card>
+  );
+
+  const renderExpensesSection = () => (
+    <Card
+      sx={{
+        flexGrow: 1,
+        minWidth: 300,
+        background: 'linear-gradient(135deg, #fff 0%, #f5f5f5 100%)',
+        borderRadius: 4,
+        boxShadow: (theme) =>
+          `0 2px 16px ${alpha(theme.palette.primary.main, 0.1)}`,
+        position: 'relative',
+      }}
+    >
+      {isChartLoading && (
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            bgcolor: 'rgba(255, 255, 255, 0.7)',
+            zIndex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 4,
+          }}
+        >
+          <CircularProgress />
+        </Box>
+      )}
+      <CardContent sx={{ p: 3 }}>
+        <Box sx={{ mb: 3 }}>
+          <Typography
+            variant="subtitle2"
+            sx={{
+              color: 'text.secondary',
+              mb: 1,
+              letterSpacing: '0.5px',
+            }}
+          >
+            {selectedAccount
+              ? `${selectedAccount.name.toUpperCase()} EXPENSES`
+              : 'TOTAL EXPENSES'}
+          </Typography>
+          <Typography
+            variant="h3"
+            sx={{
+              fontWeight: 'bold',
+              color: 'text.primary',
+            }}
+          >
+            {formatCurrency(
+              chartData.reduce((total, data) => total + data.amount, 0),
+              selectedAccount?.iso_currency_code || 'GBP'
+            )}
+          </Typography>
+        </Box>
+
+        <Box sx={{ height: 300, width: '100%', mt: 4 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} barSize={20}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+              <XAxis
+                dataKey="month"
+                axisLine={false}
+                tickLine={false}
+                dy={10}
+              />
+              <YAxis
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(value) => `£${value}`}
+                dx={-10}
+              />
+              <Tooltip
+                formatter={(value) =>
+                  formatCurrency(
+                    value,
+                    selectedAccount?.iso_currency_code || 'GBP'
+                  )
+                }
+                labelFormatter={(label) => label}
+                contentStyle={{
+                  borderRadius: 8,
+                  border: 'none',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
+                }}
+              />
+              <Bar dataKey="amount" fill="#FF69B4" radius={[10, 10, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+
+  const renderTransactionFilters = () => (
+    <Card
+      sx={{
+        mb: 3,
+        borderRadius: 4,
+        boxShadow: (theme) =>
+          `0 2px 16px ${alpha(theme.palette.primary.main, 0.1)}`,
+      }}
+    >
+      <CardContent sx={{ p: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <TabContext value={transactionFilter}>
+            <TabList
+              onChange={(_, newValue) => setTransactionFilter(newValue)}
+              sx={{
+                minHeight: '40px',
+                '& .MuiTab-root': {
+                  minHeight: '40px',
+                  textTransform: 'none',
+                  fontSize: '0.875rem',
+                  fontWeight: 500,
+                  px: 3,
+                },
+              }}
+            >
+              <Tab
+                label="All Transactions"
+                value="all"
+                sx={{ borderRadius: '20px' }}
+              />
+              <Tab
+                label="Income"
+                value="income"
+                sx={{ borderRadius: '20px' }}
+              />
+              <Tab
+                label="Expenses"
+                value="expenses"
+                sx={{ borderRadius: '20px' }}
+              />
+            </TabList>
+          </TabContext>
+
+          {/* Month Picker */}
+          <Box sx={{ ml: 'auto' }}>
+            <LocalizationProvider dateAdapter={AdapterDateFns}>
+              <DatePicker
+                label="Select Month"
+                views={['year', 'month']}
+                value={dateRange}
+                onChange={(newValue) => setDateRange(newValue)}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    size="small"
+                    sx={{
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 2,
+                        backgroundColor: 'white',
+                      },
+                    }}
+                  />
+                )}
+              />
+            </LocalizationProvider>
+          </Box>
+        </Box>
+      </CardContent>
+    </Card>
+  );
+
+  const renderTransactionsGrid = () => (
+    <Card
+      sx={{
+        height: 600,
+        borderRadius: 4,
+        boxShadow: (theme) =>
+          `0 2px 16px ${alpha(theme.palette.primary.main, 0.1)}`,
+      }}
+    >
+      <Box sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {transactionFilter !== 'all' && (
+            <Chip
+              label={`${
+                transactionFilter === 'income' ? 'Income' : 'Expenses'
+              } Only`}
+              onDelete={() => setTransactionFilter('all')}
+              size="small"
+              sx={{
+                backgroundColor:
+                  transactionFilter === 'income'
+                    ? alpha('#4CAF50', 0.1) // Green background for income
+                    : alpha('#FF3B3B', 0.1), // Red background for expenses
+                color: transactionFilter === 'income' ? '#4CAF50' : '#FF3B3B',
+                fontWeight: 500,
+                '& .MuiChip-deleteIcon': {
+                  color: transactionFilter === 'income' ? '#4CAF50' : '#FF3B3B',
+                  '&:hover': {
+                    opacity: 0.7,
+                  },
+                },
+              }}
+            />
+          )}
+          {dateRange && (
+            <Chip
+              label={`${new Date(dateRange).toLocaleDateString(undefined, {
+                month: 'long',
+                year: 'numeric',
+              })}`}
+              onDelete={() => setDateRange(null)}
+              size="small"
+              sx={{
+                backgroundColor: alpha('#4318FF', 0.1), // Purple background
+                color: '#4318FF',
+                fontWeight: 500,
+                '& .MuiChip-deleteIcon': {
+                  color: '#4318FF',
+                  '&:hover': {
+                    opacity: 0.7,
+                  },
+                },
+              }}
+            />
+          )}
+          {(transactionFilter !== 'all' || dateRange) && (
+            <Button
+              size="small"
+              onClick={clearFilters}
+              sx={{
+                ml: 'auto',
+                color: '#4318FF',
+                '&:hover': {
+                  backgroundColor: alpha('#4318FF', 0.05),
+                },
+              }}
+            >
+              Clear Filters
             </Button>
           )}
-          <Collapse in={showFilters}>
-            <Box display="flex" flexDirection="row" alignItems="center" gap={2}>
-              <DatePicker
-                label="Start Date"
-                value={startDate}
-                onChange={(newValue) => setStartDate(newValue)}
-              />
-              <DatePicker
-                label="End Date"
-                value={endDate}
-                onChange={(newValue) => setEndDate(newValue)}
-              />
-              <FormControl fullWidth>
-                <InputLabel id="category-filter-label">Category</InputLabel>
-                <Select
-                  labelId="category-filter-label"
-                  id="category-filter"
-                  value={categoryFilter}
-                  label="Category"
-                  onChange={(e) => setCategoryFilter(e.target.value)}
-                >
-                  <MenuItem key="all" value="">
-                    <em>All Categories</em>
-                  </MenuItem>
-                  {categories.map((category) => (
-                    <MenuItem key={category} value={category}>
-                      {category}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <FormControl style={{ minWidth: 120 }}>
-                <InputLabel id="account-filter-label" shrink>
-                  Account
-                </InputLabel>
-                <Select
-                  labelId="account-filter-label"
-                  id="account-filter"
-                  value={accountFilter}
-                  onChange={(e) => setAccountFilter(e.target.value)}
-                  label="Account"
-                >
-                  <MenuItem value="">All</MenuItem>
-                  {Array.isArray(accounts) && accounts.length > 0 ? (
-                    accounts.map((account) => (
-                      <MenuItem key={account.id} value={account.id}>
-                        {account.name}
-                      </MenuItem>
-                    ))
-                  ) : (
-                    <MenuItem value="" disabled>
-                      No accounts available
-                    </MenuItem>
-                  )}
-                </Select>
-              </FormControl>
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={() => setOpenAddCategoryDialog(true)}
-              >
-                ADD CATEGORY
-              </Button>
-              <Button variant="contained" onClick={handleApplyFilters}>
-                Apply Filters
-              </Button>
-              <Button variant="outlined" onClick={handleResetFilters}>
-                Reset Filters
-              </Button>
-            </Box>
-          </Collapse>
-
-          <TableContainer component={Paper}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell padding="checkbox">
-                    <Checkbox
-                      indeterminate={
-                        selectedTransactions.length > 0 &&
-                        selectedTransactions.length < transactions.length
-                      }
-                      checked={
-                        transactions.length > 0 &&
-                        selectedTransactions.length === transactions.length
-                      }
-                      onChange={(event) =>
-                        setSelectedTransactions(
-                          event.target.checked
-                            ? transactions.map((t) => t.id)
-                            : []
-                        )
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <TableSortLabel
-                      active={orderBy === 'date'}
-                      direction={orderBy === 'date' ? order : 'asc'}
-                      onClick={() => handleRequestSort('date')}
-                    >
-                      Date
-                    </TableSortLabel>
-                  </TableCell>
-                  <TableCell>Description</TableCell>
-                  <TableCell>
-                    <TableSortLabel
-                      active={orderBy === 'amount'}
-                      direction={orderBy === 'amount' ? order : 'asc'}
-                      onClick={() => handleRequestSort('amount')}
-                    >
-                      Amount
-                    </TableSortLabel>
-                  </TableCell>
-                  <TableCell>Category</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {transactions.map((transaction) => (
-                  <TableRow key={transaction.id}>
-                    <TableCell padding="checkbox">
-                      <Checkbox
-                        checked={selectedTransactions.includes(transaction.id)}
-                        onChange={(event) =>
-                          setSelectedTransactions(
-                            event.target.checked
-                              ? [...selectedTransactions, transaction.id]
-                              : selectedTransactions.filter(
-                                  (id) => id !== transaction.id
-                                )
-                          )
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {dayjs(transaction.date).format('YYYY-MM-DD')}
-                    </TableCell>
-                    <TableCell>{transaction.name}</TableCell>
-                    <TableCell>
-                      {transaction.amount !== undefined
-                        ? formatCurrency(transaction.amount)
-                        : 'N/A'}
-                    </TableCell>
-                    <TableCell>
-                      {editingId === transaction.id ? (
-                        <TextField
-                          value={editingCategory}
-                          onChange={(e) => setEditingCategory(e.target.value)}
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter') {
-                              handleCategoryChange(
-                                transaction.id,
-                                editingCategory
-                              );
-                            }
-                          }}
-                        />
-                      ) : (
-                        transaction.category || 'Uncategorized'
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {editingId === transaction.id ? (
-                        <>
-                          <IconButton
-                            onClick={() =>
-                              handleCategoryChange(
-                                transaction.id,
-                                editingCategory
-                              )
-                            }
-                          >
-                            <CheckIcon />
-                          </IconButton>
-                          <IconButton
-                            onClick={() => {
-                              setEditingId(null);
-                              setEditingCategory('');
-                            }}
-                          >
-                            <CloseIcon />
-                          </IconButton>
-                        </>
-                      ) : (
-                        <IconButton
-                          onClick={() => {
-                            setEditingId(transaction.id);
-                            setEditingCategory(transaction.category || '');
-                          }}
-                        >
-                          <EditIcon />
-                        </IconButton>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-          <TablePagination
-            rowsPerPageOptions={[5, 10, 25]}
-            component="div"
-            count={totalTransactions}
-            rowsPerPage={rowsPerPage}
-            page={page}
-            onPageChange={handleChangePage}
-            onRowsPerPageChange={handleChangeRowsPerPage}
-          />
-          <Snackbar
-            open={!!error}
-            autoHideDuration={6000}
-            onClose={handleCloseError}
-          >
-            <Alert onClose={handleCloseError} severity="error">
-              {error}
-            </Alert>
-          </Snackbar>
-          <Dialog open={openAddDialog} onClose={() => setOpenAddDialog(false)}>
-            <DialogTitle id="form-dialog-title">
-              Add New Transaction
-            </DialogTitle>
-            <DialogContent>
-              <TextField
-                label="Date"
-                type="date"
-                value={newTransaction.date}
-                onChange={(e) =>
-                  setNewTransaction({ ...newTransaction, date: e.target.value })
-                }
-                InputLabelProps={{ shrink: true }}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Description"
-                value={newTransaction.name}
-                onChange={(e) =>
-                  setNewTransaction({ ...newTransaction, name: e.target.value })
-                }
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Amount"
-                type="number"
-                value={newTransaction.amount}
-                onChange={(e) =>
-                  setNewTransaction({
-                    ...newTransaction,
-                    amount: e.target.value,
-                  })
-                }
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">£</InputAdornment>
-                  ),
-                }}
-                fullWidth
-                margin="normal"
-              />
-              <TextField
-                label="Category"
-                value={newTransaction.category}
-                onChange={(e) =>
-                  setNewTransaction({
-                    ...newTransaction,
-                    category: e.target.value,
-                  })
-                }
-                fullWidth
-                margin="normal"
-              />
-              <FormControl fullWidth margin="normal">
-                <InputLabel>Account</InputLabel>
-                <Select
-                  value={newTransaction.account_id}
-                  onChange={(e) =>
-                    setNewTransaction({
-                      ...newTransaction,
-                      account_id: e.target.value,
-                    })
-                  }
-                >
-                  {Array.isArray(accounts) &&
-                    accounts.map((account) => (
-                      <MenuItem key={account.id} value={account.id}>
-                        {account.name}
-                      </MenuItem>
-                    ))}
-                </Select>
-              </FormControl>
-            </DialogContent>
-            <DialogActions>
-              <Button onClick={() => setOpenAddDialog(false)}>Cancel</Button>
-              <Button onClick={handleAddTransaction}>Add</Button>
-            </DialogActions>
-          </Dialog>
         </Box>
-        {/* Add Category Dialog */}
-        <Dialog
-          open={openAddCategoryDialog}
-          onClose={() => setOpenAddCategoryDialog(false)}
+      </Box>
+      <DataGrid
+        rows={transactions}
+        columns={columns}
+        pageSize={10}
+        rowsPerPageOptions={[10, 25, 50]}
+        checkboxSelection={false}
+        disableSelectionOnClick
+        loading={loading}
+        components={{
+          LoadingOverlay: CustomLoadingOverlay,
+          Toolbar: GridToolbar,
+        }}
+        componentsProps={{
+          toolbar: {
+            sx: {
+              '& .MuiButton-root': {
+                color: 'primary.main',
+              },
+            },
+          },
+        }}
+        sx={{
+          '& .income-row': {
+            color: 'success.main',
+          },
+          '& .expense-row': {
+            color: '#FF69B4',
+          },
+        }}
+      />
+    </Card>
+  );
+
+  const CustomLoadingOverlay = () => (
+    <Box
+      sx={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(255, 255, 255, 0.7)',
+      }}
+    >
+      <CircularProgress size={40} />
+      <Typography sx={{ mt: 2 }}>Loading Transactions...</Typography>
+    </Box>
+  );
+
+  const clearFilters = () => {
+    setTransactionFilter('all');
+    setDateRange(null);
+  };
+
+  return (
+    <LocalizationProvider dateAdapter={AdapterDateFns}>
+      <Box sx={{ p: 3 }}>
+        <Typography variant="h4" gutterBottom>
+          Transactions
+        </Typography>
+
+        <Box
+          sx={{
+            display: 'flex',
+            gap: 3,
+            mb: 4,
+            flexWrap: { xs: 'wrap', lg: 'nowrap' },
+          }}
         >
-          <DialogTitle>Add New Category</DialogTitle>
-          <DialogContent>
-            <TextField
-              autoFocus
-              margin="dense"
-              label="Category Name"
-              type="text"
-              fullWidth
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-            />
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => setOpenAddCategoryDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddCategory}>Add</Button>
-          </DialogActions>
-        </Dialog>
-      </>
+          {renderAccountsSection()}
+          {renderExpensesSection()}
+        </Box>
+
+        {renderTransactionFilters()}
+        {renderTransactionsGrid()}
+      </Box>
     </LocalizationProvider>
   );
 }

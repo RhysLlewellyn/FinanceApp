@@ -11,27 +11,46 @@ import {
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../services/authContext';
 import api from '../services/api';
+import { useNotification } from '../contexts/NotificationContext';
 
 function Login() {
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { login } = useAuth();
+  const { showNotification } = useNotification();
+
+  const isValidEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+
+    if (!isValidEmail(email)) {
+      showNotification('Please enter a valid email address', 'error');
+      return;
+    }
+
     try {
-      const response = await api.post('/login', {
-        username,
-        password,
-      });
-      login(response.data.access_token);
+      setLoading(true);
+      await login(email, password);
       navigate('/dashboard');
     } catch (error) {
-      console.error('Login failed:', error);
-      setError('Invalid username or password. Please try again.');
+      console.error('Login error:', error);
+      let errorMessage = 'Login failed';
+
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      showNotification(errorMessage, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -46,13 +65,17 @@ function Login() {
             margin="normal"
             required
             fullWidth
-            id="username"
-            label="Username"
-            name="username"
-            autoComplete="username"
+            id="email"
+            label="Email"
+            name="email"
+            autoComplete="email"
             autoFocus
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            value={email}
+            onChange={(e) => setEmail(e.target.value.trim())}
+            error={email && !isValidEmail(email)}
+            helperText={
+              email && !isValidEmail(email) ? 'Invalid email format' : ''
+            }
           />
           <TextField
             margin="normal"
@@ -65,19 +88,22 @@ function Login() {
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            error={password && password.length < 6}
+            helperText={
+              password && password.length < 6
+                ? 'Password must be at least 6 characters'
+                : ''
+            }
           />
-          {error && (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {error}
-            </Alert>
-          )}
           <Button
             type="submit"
             fullWidth
             variant="contained"
+            color="primary"
+            disabled={loading}
             sx={{ mt: 3, mb: 2 }}
           >
-            Login
+            {loading ? 'Logging in...' : 'Login'}
           </Button>
           <Button
             component={Link}

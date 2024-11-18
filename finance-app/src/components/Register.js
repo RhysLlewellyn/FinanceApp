@@ -9,42 +9,59 @@ import {
   Alert,
 } from '@mui/material';
 import { useNavigate, Link } from 'react-router-dom';
-import api from '../services/api';
+import { useAuth } from '../services/authContext';
+import { useNotification } from '../contexts/NotificationContext';
 
 function Register() {
-  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { register } = useAuth();
+  const { showNotification } = useNotification();
+
+  const isValidEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError('');
+
+    if (!isValidEmail(email)) {
+      showNotification('Please enter a valid email address', 'error');
+      return;
+    }
+
+    if (password.length < 6) {
+      showNotification('Password must be at least 6 characters', 'error');
+      return;
+    }
 
     if (password !== confirmPassword) {
-      setError("Passwords don't match");
+      showNotification('Passwords do not match', 'error');
       return;
     }
 
     try {
-      const response = await api.post('/register', {
-        username,
-        email,
-        password,
-      });
-
-      if (response.status === 201) {
-        // Registration successful
-        navigate('/login');
-      }
+      setLoading(true);
+      await register(email, password);
+      showNotification('Registration successful! Please log in.', 'success');
+      navigate('/login');
     } catch (error) {
-      if (error.response) {
-        setError(error.response.data.message || 'Registration failed');
-      } else {
-        setError('An error occurred. Please try again.');
+      console.error('Registration error:', error);
+      let errorMessage = 'Registration failed';
+
+      if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
       }
+
+      showNotification(errorMessage, 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -59,24 +76,17 @@ function Register() {
             margin="normal"
             required
             fullWidth
-            id="username"
-            label="Username"
-            name="username"
-            autoComplete="username"
-            autoFocus
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <TextField
-            margin="normal"
-            required
-            fullWidth
             id="email"
             label="Email Address"
             name="email"
             autoComplete="email"
+            autoFocus
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => setEmail(e.target.value.trim())}
+            error={email && !isValidEmail(email)}
+            helperText={
+              email && !isValidEmail(email) ? 'Invalid email format' : ''
+            }
           />
           <TextField
             margin="normal"
@@ -86,9 +96,14 @@ function Register() {
             label="Password"
             type="password"
             id="password"
-            autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            error={password && password.length < 6}
+            helperText={
+              password && password.length < 6
+                ? 'Password must be at least 6 characters'
+                : ''
+            }
           />
           <TextField
             margin="normal"
@@ -100,26 +115,37 @@ function Register() {
             id="confirmPassword"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
+            error={confirmPassword && password !== confirmPassword}
+            helperText={
+              confirmPassword && password !== confirmPassword
+                ? 'Passwords do not match'
+                : ''
+            }
           />
-          {error && (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {error}
-            </Alert>
-          )}
           <Button
             type="submit"
             fullWidth
             variant="contained"
             sx={{ mt: 3, mb: 2 }}
+            disabled={loading}
           >
-            Register
+            {loading ? 'Registering...' : 'Register'}
+          </Button>
+          <Button
+            component={Link}
+            to="/login"
+            fullWidth
+            variant="outlined"
+            sx={{ mt: 1, mb: 2 }}
+          >
+            Already have an account? Login
           </Button>
           <Button
             component={Link}
             to="/"
             fullWidth
-            variant="outlined"
-            sx={{ mt: 1, mb: 2 }}
+            variant="text"
+            sx={{ mt: 1 }}
           >
             Back to Home
           </Button>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Typography,
   Button,
@@ -6,111 +6,144 @@ import {
   Paper,
   Box,
   CircularProgress,
+  Alert,
+  LinearProgress,
+  IconButton,
 } from '@mui/material';
 import { Link } from 'react-router-dom';
 import api from '../services/api';
 import { formatCurrency } from '../utils/currencyFormatter';
+import useNotification from '../hooks/useNotification';
+import DeleteIcon from '@mui/icons-material/Delete';
 
 function Budgets() {
   const [budgets, setBudgets] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessages, setErrorMessages] = useState({
+    fetch: null,
+    delete: null,
+    create: null,
+  });
+  const { showNotification } = useNotification();
 
-  useEffect(() => {
-    const fetchBudgets = async () => {
-      try {
-        setLoading(true);
-        const response = await api.get('/budget_status');
-        setBudgets(response.data);
-      } catch (error) {
-        console.error('Error fetching budgets:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  const clearError = (errorType) => {
+    setErrorMessages((prev) => ({ ...prev, [errorType]: null }));
+  };
 
-    fetchBudgets();
+  const fetchBudgets = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      clearError('fetch');
+      const response = await api.get('/budget_status');
+      setBudgets(response.data);
+    } catch (error) {
+      const errorMessage =
+        error.response?.data?.error ||
+        'Failed to fetch budgets. Please try again.';
+      setErrorMessages((prev) => ({ ...prev, fetch: errorMessage }));
+      console.error('Error fetching budgets:', error);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   const handleDeleteBudget = async (budgetId) => {
     try {
+      setIsLoading(true);
+      clearError('delete');
       await api.delete(`/delete_budget/${budgetId}`);
       setBudgets(budgets.filter((budget) => budget.id !== budgetId));
+      showNotification('Budget deleted successfully');
     } catch (error) {
+      const errorMessage =
+        error.response?.data?.error ||
+        'Failed to delete budget. Please try again.';
+      setErrorMessages((prev) => ({ ...prev, delete: errorMessage }));
       console.error('Error deleting budget:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  if (loading) {
-    return (
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: '100vh',
-        }}
-      >
-        <CircularProgress />
-      </Box>
-    );
-  }
+  useEffect(() => {
+    fetchBudgets();
+  }, [fetchBudgets]);
 
   return (
     <Box sx={{ flexGrow: 1, p: 3 }}>
+      {/* Display errors */}
+      {Object.entries(errorMessages).map(
+        ([key, message]) =>
+          message && (
+            <Alert
+              key={key}
+              severity="error"
+              onClose={() => clearError(key)}
+              sx={{ mb: 2 }}
+            >
+              {message}
+            </Alert>
+          )
+      )}
+
+      {/* Loading state */}
+      {isLoading && (
+        <Box sx={{ width: '100%', mt: 2, mb: 2 }}>
+          <LinearProgress />
+        </Box>
+      )}
+
       <Typography variant="h4" gutterBottom>
         Budget Alerts
       </Typography>
+
+      {/* No budgets message */}
+      {!isLoading && budgets.length === 0 && (
+        <Box sx={{ textAlign: 'center', py: 4 }}>
+          <Typography variant="body1" color="text.secondary" gutterBottom>
+            No budgets set yet
+          </Typography>
+          <Button
+            component={Link}
+            to="/budgets/new"
+            variant="contained"
+            sx={{ mt: 2 }}
+          >
+            Create Your First Budget
+          </Button>
+        </Box>
+      )}
+
+      {/* Budget alerts */}
       {budgets
         .filter((budget) => budget.status === 'Over Budget')
         .map((budget) => (
           <Paper key={budget.id} elevation={3} sx={{ p: 2, mb: 2 }}>
-            <Typography variant="body1">
-              {`${budget.category} is over budget by ${formatCurrency(
-                Math.abs(budget.remaining)
-              )}`}
-            </Typography>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <Typography variant="body1">
+                {`${budget.category} is over budget by ${formatCurrency(
+                  Math.abs(budget.remaining)
+                )}`}
+              </Typography>
+              <Box>
+                <IconButton
+                  onClick={() => handleDeleteBudget(budget.id)}
+                  disabled={isLoading}
+                  size="small"
+                  color="error"
+                >
+                  <DeleteIcon />
+                </IconButton>
+              </Box>
+            </Box>
           </Paper>
         ))}
-      <Button
-        variant="contained"
-        color="primary"
-        component={Link}
-        to="/budgets/new"
-        sx={{ mt: 2, mb: 4 }}
-      >
-        CREATE NEW BUDGET
-      </Button>
-      <Grid container spacing={3}>
-        {budgets.map((budget) => (
-          <Grid item xs={12} sm={6} md={4} key={budget.id}>
-            <Paper elevation={3} sx={{ p: 2 }}>
-              <Typography variant="h6">{budget.category}</Typography>
-              <Typography>Limit: {formatCurrency(budget.limit)}</Typography>
-              <Typography>Spent: {formatCurrency(budget.spent)}</Typography>
-              <Typography>
-                Remaining: {formatCurrency(budget.remaining)}
-              </Typography>
-              {budget.is_recurring && (
-                <Typography variant="body2">
-                  Recurring: {budget.recurrence_period}
-                </Typography>
-              )}
-              <Box sx={{ mt: 2 }}>
-                <Button
-                  component={Link}
-                  to={`/budgets/edit/${budget.id}`}
-                  sx={{ mr: 1 }}
-                >
-                  EDIT
-                </Button>
-                <Button onClick={() => handleDeleteBudget(budget.id)}>
-                  DELETE
-                </Button>
-              </Box>
-            </Paper>
-          </Grid>
-        ))}
-      </Grid>
     </Box>
   );
 }
