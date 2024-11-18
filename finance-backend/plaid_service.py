@@ -14,9 +14,12 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.country_code import CountryCode
 from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
 from plaid.model.sandbox_public_token_create_request_options import SandboxPublicTokenCreateRequestOptions
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 import os
+import time
 from datetime import datetime, timedelta
 from models import db, Transaction, Account, PlaidItem
+import traceback
 
 def create_plaid_client():
     configuration = plaid.Configuration(
@@ -66,29 +69,104 @@ def create_sandbox_public_token():
     return response['public_token']
 
 def exchange_public_token(public_token, logger):
-    client = create_plaid_client()
-    exchange_response = client.item_public_token_exchange(
-        plaid.model.item_public_token_exchange_request.ItemPublicTokenExchangeRequest(
+    try:
+        client = create_plaid_client()
+        # Create the proper request object
+        request = ItemPublicTokenExchangeRequest(
             public_token=public_token
         )
-    )
-    access_token = exchange_response['access_token']
-    item_id = exchange_response['item_id']
-    return access_token, item_id
+        exchange_response = client.item_public_token_exchange(request)
+        logger.debug("Successfully exchanged public token")
+        return exchange_response['access_token'], exchange_response['item_id']
+    except plaid.ApiException as e:
+        logger.error(f"Plaid API error in exchange_public_token: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Error in exchange_public_token: {str(e)}")
+        raise
 
-def fetch_and_store_transactions(access_token, user_id, logger):
-    client = create_plaid_client()
-    end_date = datetime.now().date()
-    start_date = end_date - timedelta(days=30)
-
+def fetch_and_store_transactions(access_token, user_id, logger, start_date=None, end_date=None):
     try:
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=30)).date()
+        if end_date is None:
+            end_date = datetime.now().date()
+
         logger.info(f"Fetching transactions for user {user_id} from {start_date} to {end_date}")
+        
+        # Get transactions from Plaid
         transactions = get_transactions_from_plaid(access_token, start_date, end_date, logger)
-        # Process transactions...
-        logger.info(f"Stored {len(transactions)} transactions for user {user_id}")
-        return len(transactions)
+        
+        # Get all accounts for this user
+        accounts = {account.plaid_account_id: account.id for account in 
+                   Account.query.filter_by(user_id=user_id).all()}
+        
+        stored_count = 0
+        for plaid_transaction in transactions:
+            # Skip if transaction already exists
+            existing = Transaction.query.filter_by(
+                transaction_id=plaid_transaction['transaction_id']
+            ).first()
+            
+            if existing:
+                continue
+                
+            # Get the internal account ID
+            account_id = accounts.get(plaid_transaction['account_id'])
+            if not account_id:
+                logger.warning(f"Account not found for transaction {plaid_transaction['transaction_id']}")
+                continue
+            
+            # Handle date fields properly
+            transaction_date = plaid_transaction['date']
+            if isinstance(transaction_date, str):
+                transaction_date = datetime.strptime(transaction_date, '%Y-%m-%d').date()
+            elif isinstance(transaction_date, datetime):
+                transaction_date = transaction_date.date()
+                
+            # Handle authorized_date
+            authorized_date = plaid_transaction.get('authorized_date')
+            if authorized_date:
+                if isinstance(authorized_date, str):
+                    authorized_date = datetime.strptime(authorized_date, '%Y-%m-%d').date()
+                elif isinstance(authorized_date, datetime):
+                    authorized_date = authorized_date.date()
+
+            # Invert the amount
+            amount = -float(plaid_transaction['amount'])
+            
+            new_transaction = Transaction(
+                user_id=user_id,
+                account_id=account_id,
+                transaction_id=plaid_transaction['transaction_id'],
+                amount=amount,
+                date=transaction_date,
+                name=plaid_transaction['name'],
+                category=plaid_transaction.get('personal_finance_category', {}).get('primary', 'UNCATEGORIZED'),
+                subcategory=plaid_transaction.get('personal_finance_category', {}).get('detailed', None),
+                pending=plaid_transaction.get('pending', False),
+                merchant_name=plaid_transaction.get('merchant_name'),
+                payment_channel=plaid_transaction.get('payment_channel', 'OTHER'),
+                location_city=plaid_transaction.get('location', {}).get('city'),
+                location_region=plaid_transaction.get('location', {}).get('region'),
+                location_country=plaid_transaction.get('location', {}).get('country'),
+                authorized_date=authorized_date,
+                logo_url=plaid_transaction.get('logo_url'),
+                website=plaid_transaction.get('website'),
+                iso_currency_code=plaid_transaction.get('iso_currency_code')
+            )
+            
+            db.session.add(new_transaction)
+            stored_count += 1
+            
+        db.session.commit()
+        logger.info(f"Successfully stored {stored_count} new transactions for user {user_id}")
+        return stored_count
+        
     except Exception as e:
         logger.error(f"Error in fetch_and_store_transactions: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        db.session.rollback()
         raise
 
 def handle_plaid_error(e, logger):
@@ -113,62 +191,46 @@ def handle_plaid_error(e, logger):
 def get_account_info_from_plaid(access_token, logger):
     try:
         client = create_plaid_client()
-        logger.info("Fetching account info from Plaid")
-        request = AccountsGetRequest(access_token=access_token)
-        response = client.accounts_get(request)
-        
-        accounts_info = []
-        for account in response['accounts']:
-            accounts_info.append({
-                'name': account['name'],
-                'balance': account['balances']['current'],
-                'account_id': account['account_id'],
-                'type': str(account['type']),  # Convert to string
-                'subtype': str(account.get('subtype', ''))  # Convert to string, use empty string if None
-            })
-        
-        logger.info("Account info fetched successfully")
-        return accounts_info
-    except ApiException as e:  # Update this exception
-        logger.error(f"Error fetching account info from Plaid: {str(e)}")
-        raise e
+        response = client.accounts_get(access_token)
+        logger.info(f"Plaid response: {response}")
+        return response['accounts']
     except Exception as e:
-        logger.error(f"Unexpected error fetching account info from Plaid: {str(e)}")
-        raise e
+        logger.error(f"Error getting account info from Plaid: {str(e)}")
+        raise
 
 def get_transactions_from_plaid(access_token, start_date, end_date, logger):
     try:
         client = create_plaid_client()
-        start_date = (datetime.now() - timedelta(days=30)).date()
-        end_date = datetime.now().date()
-
-        # Convert dates to string format expected by Plaid
-        start_date_str = start_date.strftime('%Y-%m-%d')
-        end_date_str = end_date.strftime('%Y-%m-%d')
         
         request = TransactionsGetRequest(
             access_token=access_token,
             start_date=start_date,
             end_date=end_date,
-            options=TransactionsGetRequestOptions()
+            options=TransactionsGetRequestOptions(
+                include_personal_finance_category=True
+            )
         )
+        
         response = client.transactions_get(request)
         transactions = response['transactions']
         
+        # Handle pagination
         while len(transactions) < response['total_transactions']:
             request = TransactionsGetRequest(
                 access_token=access_token,
                 start_date=start_date,
                 end_date=end_date,
                 options=TransactionsGetRequestOptions(
+                    include_personal_finance_category=True,
                     offset=len(transactions)
                 )
             )
             response = client.transactions_get(request)
             transactions.extend(response['transactions'])
         
-        logger.info(f"Transactions fetched successfully")
+        logger.info(f"Successfully fetched {len(transactions)} transactions from Plaid")
         return transactions
+        
     except plaid.ApiException as e:
         logger.error(f"Error fetching transactions from Plaid: {str(e)}")
         raise
@@ -199,67 +261,78 @@ def insert_transaction(transaction_data, logger):
 
 def update_transactions():
     with app.app_context():
+        logger = app.logger
         plaid_items = PlaidItem.query.all()
+        
         for plaid_item in plaid_items:
             try:
-                access_token = plaid_item.access_token
-                start_date = (datetime.now() - timedelta(days=30)).date()
-                end_date = datetime.now().date()
-
-                transactions = get_transactions_from_plaid(access_token, start_date, end_date, app.logger)
-
-                for transaction in transactions:
-                    existing_transaction = Transaction.query.filter_by(transaction_id=transaction['transaction_id']).first()
-                    if not existing_transaction:
-                        insert_transaction({
-                            'user_id': plaid_item.user_id,
-                            'account_id': transaction['account_id'],
-                            'transaction_id': transaction['transaction_id'],
-                            'amount': transaction['amount'],
-                            'date': transaction['date'],
-                            'name': transaction['name'],
-                            'category': transaction['category']
-                        }, app.logger)
-                
-                db.session.commit()
-                app.logger.info(f"Updated transactions for PlaidItem {plaid_item.id}")
+                logger.info(f"Updating transactions for PlaidItem {plaid_item.id}")
+                fetch_and_store_transactions(
+                    access_token=plaid_item.access_token,
+                    user_id=plaid_item.user_id,
+                    logger=logger
+                )
             except Exception as e:
-                app.logger.error(f"Error updating transactions for PlaidItem {plaid_item.id}: {str(e)}")
-                db.session.rollback()
+                logger.error(f"Error updating transactions for PlaidItem {plaid_item.id}: {str(e)}")
+                continue
 
 def sync_accounts(user_id, access_token, logger):
     try:
-        plaid_accounts = get_account_info_from_plaid(access_token, logger)
-        plaid_item = PlaidItem.query.filter_by(user_id=user_id, access_token=access_token).first()
+        client = create_plaid_client()
+        request = AccountsGetRequest(access_token=access_token)
+        response = client.accounts_get(request)
         
+        plaid_item = PlaidItem.query.filter_by(user_id=user_id).order_by(PlaidItem.id.desc()).first()
         if not plaid_item:
-            logger.error(f"No PlaidItem found for user {user_id} with the given access token")
-            raise ValueError("No PlaidItem found for the given access token")
+            error_msg = f"No PlaidItem found for user {user_id}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
         
-        for plaid_account in plaid_accounts:
-            db_account = Account.query.filter_by(plaid_account_id=plaid_account['account_id']).first()
-            if db_account:
-                # Update existing account
-                db_account.name = plaid_account['name']
-                db_account.balance = plaid_account['balance']
-                db_account.type = plaid_account['type']
-                db_account.subtype = plaid_account['subtype']
+        logger.info(f"Processing {len(response['accounts'])} accounts")
+        
+        for plaid_account in response['accounts']:
+            logger.info(f"Processing account: {plaid_account}")
+            
+            account = Account.query.filter_by(
+                user_id=user_id,
+                plaid_account_id=plaid_account['account_id']
+            ).first()
+            
+            balances = plaid_account['balances']
+            account_data = {
+                'user_id': user_id,
+                'plaid_account_id': plaid_account['account_id'],
+                'name': plaid_account['name'],
+                'type': str(plaid_account['type']),
+                'subtype': str(plaid_account.get('subtype', '')),
+                'balance': float(balances.get('current', 0.0)),
+                'iso_currency_code': balances.get('iso_currency_code'),
+                'plaid_item_id': plaid_item.id
+            }
+            
+            if not account:
+                account = Account(**account_data)
+                db.session.add(account)
+                logger.info(f"Created new account: {account.name}")
             else:
-                # Create new account
-                new_account = Account(
-                    user_id=user_id,
-                    plaid_item_id=plaid_item.id,  # Add this line
-                    plaid_account_id=plaid_account['account_id'],
-                    name=plaid_account['name'],
-                    balance=plaid_account['balance'],
-                    type=plaid_account['type'],
-                    subtype=plaid_account['subtype']
-                )
-                db.session.add(new_account)
+                for key, value in account_data.items():
+                    setattr(account, key, value)
+                logger.info(f"Updated existing account: {account.name}")
         
         db.session.commit()
-        logger.info(f"Synchronized accounts for user {user_id}")
-    except Exception as e:
-        logger.error(f"Error synchronizing accounts for user {user_id}: {str(e)}")
+        logger.info(f"Successfully synced accounts for user {user_id}")
+        return True
+        
+    except plaid.ApiException as e:
+        error_msg = f"Plaid API error while syncing accounts: {str(e)}"
+        logger.error(error_msg)
+        logger.error(f"Traceback: {traceback.format_exc()}")
         db.session.rollback()
-        raise
+        raise Exception(error_msg)
+        
+    except Exception as e:
+        error_msg = f"Error syncing accounts: {str(e)}"
+        logger.error(error_msg)
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        db.session.rollback()
+        raise Exception(error_msg)
